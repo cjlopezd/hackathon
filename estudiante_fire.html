@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hackathon - Estudiante</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
+      body { font-family: 'Segoe UI', sans-serif; background-color: #f0fdf4; }
+      .input-field { border: 1px solid #d1d5db; border-radius: 0.375rem; padding: 0.5rem; width: 100%; transition: 0.2s; }
+      .input-field:focus { border-color: #16a34a; ring: 2px; outline: none; }
+      .input-field:disabled { background-color: #e5e7eb; cursor: not-allowed; }
+      @keyframes pulse-green { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+      .live-indicator { animation: pulse-green 2s infinite; width: 10px; height: 10px; background-color: #4ade80; border-radius: 50%; margin-right: 8px; display: inline-block; box-shadow: 0 0 8px #4ade80; }
+      .status-badge { font-size: 0.7rem; padding: 4px 8px; border-radius: 4px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!-- FIREBASE SDK -->
+    <script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+      import { getFirestore, doc, onSnapshot, updateDoc, getDoc } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+      // --- ¡IMPORTANTE! PEGA AQUÍ LA MISMA CONFIGURACIÓN QUE EN EL PROFESOR ---
+  const firebaseConfig = {
+        apiKey: "AIzaSyD1ys6rJOYdandrvK9aiNCXnh_c9q77Ixg",
+        authDomain: "iprodam3d.firebaseapp.com",
+        databaseURL: "https://iprodam3d.firebaseio.com",
+        projectId: "iprodam3d",
+        storageBucket: "iprodam3d.firebasestorage.app",
+        messagingSenderId: "1074880513462",
+        appId: "1:1074880513462:web:abc0842f42676017caad17"
+        };
+      // ------------------------------------------------------------------------
+
+      const app = initializeApp(firebaseConfig);
+      const db = getFirestore(app);
+      
+      window.db = db;
+      window.doc = doc;
+      window.onSnapshot = onSnapshot;
+      window.updateDoc = updateDoc;
+      window.getDoc = getDoc;
+      
+      // Verificar configuración
+      window.isConfigured = firebaseConfig.apiKey !== "TU_API_KEY_AQUI";
+    </script>
+
+    <script type="text/babel">
+      const { useState, useEffect, useMemo, useRef } = React;
+
+      function App() {
+        const [activeTab, setActiveTab] = useState('groups');
+        
+        // Datos del Evento
+        const [groups, setGroups] = useState([]);
+        const [hackathonStatus, setHackathonStatus] = useState('setup'); // setup, running, ended
+        const [hackathonName, setHackathonName] = useState("Cargando...");
+        const [metricsList, setMetricsList] = useState(['F1 Score']);
+        const [endTime, setEndTime] = useState(null);
+        const [timeLeft, setTimeLeft] = useState("--:--");
+        
+        // Datos del Alumno
+        const [myGroupId, setMyGroupId] = useState(null);
+        const [linkInput, setLinkInput] = useState("");
+        const [scoresInput, setScoresInput] = useState({});
+        
+        // UI
+        const [isSaving, setIsSaving] = useState(false);
+        const [connectionStatus, setConnectionStatus] = useState("Conectando...");
+        const [configError, setConfigError] = useState(false);
+
+        // 1. INICIALIZAR Y ESCUCHAR (REALTIME)
+        useEffect(() => {
+            const initFirebase = setInterval(() => {
+                if (window.db) {
+                    clearInterval(initFirebase);
+                    
+                    if (!window.isConfigured) {
+                        setConfigError(true);
+                        return;
+                    }
+
+                    const docRef = window.doc(window.db, "hackathons", "active");
+                    
+                    // Escuchar cambios automáticamente
+                    window.onSnapshot(docRef, (docSnap) => {
+                        if (docSnap.exists()) {
+                            const data = docSnap.data();
+                            
+                            // Actualizar estados globales
+                            // Usamos JSON.stringify para comparar y evitar re-renderizados innecesarios si la data es idéntica
+                            setGroups(prev => JSON.stringify(prev) !== JSON.stringify(data.groups) ? (data.groups || []) : prev);
+                            setHackathonStatus(data.status);
+                            setHackathonName(data.name);
+                            setEndTime(data.endTime);
+                            if(data.metrics) setMetricsList(data.metrics);
+                            
+                            setConnectionStatus("En línea");
+                        } else {
+                            setConnectionStatus("Esperando configuración del Profesor...");
+                            setHackathonStatus('setup');
+                        }
+                    }, (error) => {
+                        console.error("Error:", error);
+                        setConnectionStatus("Error de conexión");
+                    });
+                }
+            }, 100);
+            return () => clearInterval(initFirebase);
+        }, []);
+
+        // 2. SINCRONIZAR DATOS DE MI GRUPO (SOLO SI CAMBIAN)
+        useEffect(() => {
+            if (myGroupId && groups.length > 0) {
+                const g = groups.find(x => x.id === parseInt(myGroupId));
+                if(g) {
+                    // Solo actualizamos si el input está vacío para no borrar lo que el alumno escribe
+                    if (!linkInput && g.link) setLinkInput(g.link);
+                    
+                    // Sincronizar métricas faltantes
+                    const newScores = { ...scoresInput };
+                    let changed = false;
+                    metricsList.forEach(m => {
+                        // Si el alumno no ha escrito nada para esta métrica, y el servidor tiene dato, lo traemos
+                        if ((!newScores[m]) && g.scores && g.scores[m]) {
+                            newScores[m] = g.scores[m];
+                            changed = true;
+                        }
+                    });
+                    if (changed) setScoresInput(newScores);
+                }
+            }
+        }, [groups, myGroupId, metricsList]);
+
+        // 3. TIMER VISUAL
+        useEffect(() => {
+            const interval = setInterval(() => {
+                if (hackathonStatus === 'running' && endTime) {
+                    const dist = endTime - Date.now();
+                    if (dist < 0) setTimeLeft("00:00:00");
+                    else {
+                        const h = Math.floor((dist % 86400000) / 3600000);
+                        const m = Math.floor((dist % 3600000) / 60000);
+                        const s = Math.floor((dist % 60000) / 1000);
+                        const f = (n) => String(n).padStart(2, '0');
+                        setTimeLeft(`${f(h)}:${f(m)}:${f(s)}`);
+                    }
+                } else if (hackathonStatus === 'ended') {
+                    setTimeLeft("FINALIZADO");
+                } else {
+                    setTimeLeft("ESPERA");
+                }
+            }, 1000);
+            return () => clearInterval(interval);
+        }, [hackathonStatus, endTime]);
+
+        // 4. ENVIAR DATOS (Escritura Segura)
+        const submitWork = async () => {
+            if (!myGroupId) return alert("Selecciona tu equipo primero");
+            setIsSaving(true);
+            
+            try {
+                const docRef = window.doc(window.db, "hackathons", "active");
+                // Leemos el estado MÁS RECIENTE del servidor antes de escribir
+                // Esto evita sobrescribir datos si alguien más envió algo justo ahora
+                const snap = await window.getDoc(docRef);
+                
+                if (!snap.exists()) throw new Error("No hay hackathon activo");
+                const currentData = snap.data();
+                
+                if (currentData.status === 'ended') throw new Error("El evento ha finalizado.");
+
+                // Actualizamos SOLO nuestro grupo en la lista de grupos del servidor
+                const newGroups = currentData.groups.map(g => {
+                    if (g.id === parseInt(myGroupId)) {
+                        return { 
+                            ...g, 
+                            link: linkInput, 
+                            scores: scoresInput 
+                        };
+                    }
+                    return g;
+                });
+                
+                await window.updateDoc(docRef, { groups: newGroups });
+                alert("✅ ¡Entrega guardada con éxito!");
+            } catch (e) {
+                alert("Error al guardar: " + e.message);
+            } finally {
+                setIsSaving(false);
+            }
+        };
+
+        const handleGroupChange = (gid) => {
+            setMyGroupId(gid);
+            const g = groups.find(x => x.id === parseInt(gid));
+            // Cargar datos si existen, o limpiar
+            if(g) {
+                setLinkInput(g.link || "");
+                setScoresInput(g.scores || {});
+            } else {
+                setLinkInput("");
+                setScoresInput({});
+            }
+        };
+
+        // Ranking para visualización
+        const ranking = useMemo(() => {
+             const m = metricsList[0];
+             return [...groups].sort((a, b) => (parseFloat(b.scores?.[m]||0) - parseFloat(a.scores?.[m]||0)));
+        }, [groups, metricsList]);
+
+        // --- ERROR DE CONFIGURACIÓN ---
+        if (configError) {
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-red-50 p-4">
+                    <div className="bg-white p-6 rounded-lg shadow-lg border border-red-200 text-center max-w-md">
+                        <h2 className="text-red-600 font-bold text-xl mb-2">⚠️ Falta Configuración</h2>
+                        <p className="text-gray-600 text-sm mb-4">
+                            No has configurado las credenciales de Firebase en el archivo <code>student.html</code>.
+                        </p>
+                        <p className="text-gray-500 text-xs">
+                            Abre el archivo en un editor de texto, busca la línea <code>const firebaseConfig</code> y pega tus datos.
+                        </p>
+                    </div>
+                </div>
+            );
+        }
+
+        const isLocked = hackathonStatus === 'ended' || hackathonStatus === 'setup';
+
+        return (
+            <div className="flex flex-col h-screen max-w-md mx-auto bg-white shadow-2xl border-x">
+                {/* HEADER */}
+                <div className={`p-4 shadow-md transition-colors duration-300 ${hackathonStatus === 'running' ? 'bg-green-600' : (hackathonStatus === 'ended' ? 'bg-red-700' : 'bg-gray-700')} text-white`}>
+                    <div className="flex justify-between items-start mb-2">
+                        <div>
+                            <h1 className="font-bold text-lg leading-tight">{hackathonName}</h1>
+                            <div className="flex items-center mt-1">
+                                <div className={`live-indicator ${connectionStatus === 'En línea' ? 'bg-green-400' : 'bg-yellow-400'}`}></div>
+                                <span className="text-xs opacity-80">{connectionStatus}</span>
+                            </div>
+                        </div>
+                        <div className="text-right">
+                            <div className="text-[10px] opacity-75 uppercase font-bold mb-1">
+                                {hackathonStatus === 'running' ? 'TIEMPO RESTANTE' : 'ESTADO'}
+                            </div>
+                            <div className="font-mono text-2xl font-black tracking-widest leading-none">{timeLeft}</div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* TABS */}
+                <div className="flex border-b bg-gray-50">
+                    <button onClick={()=>setActiveTab('groups')} className={`flex-1 py-3 text-sm font-bold transition ${activeTab==='groups'?'text-green-700 border-b-2 border-green-600 bg-white':'text-gray-500'}`}>MI ENTREGA</button>
+                    <button onClick={()=>setActiveTab('results')} className={`flex-1 py-3 text-sm font-bold transition ${activeTab==='results'?'text-green-700 border-b-2 border-green-600 bg-white':'text-gray-500'}`}>RANKING</button>
+                </div>
+
+                {/* CONTENIDO */}
+                <div className="flex-1 overflow-y-auto p-4 bg-white">
+                    
+                    {/* PESTAÑA ENTREGA */}
+                    {activeTab === 'groups' && (
+                        <div className="space-y-6">
+                            {/* 1. Selector */}
+                            <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+                                <label className="block text-xs font-bold text-gray-500 uppercase mb-2">Selecciona tu Equipo</label>
+                                <select className="input-field font-bold text-gray-800 w-full bg-white" value={myGroupId || ""} onChange={e => handleGroupChange(e.target.value)}>
+                                    <option value="">-- Selecciona --</option>
+                                    {groups.map(g=>(<option key={g.id} value={g.id}>{g.name}</option>))}
+                                </select>
+                                {myGroupId && (
+                                    <div className="mt-2 text-xs text-gray-500 pl-1">
+                                        Integrantes: {groups.find(x=>x.id===parseInt(myGroupId))?.members.map(m=>m.name).join(", ")}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* 2. Formulario */}
+                            <div className={`transition-all duration-300 ${!myGroupId ? 'opacity-40 pointer-events-none' : 'opacity-100'}`}>
+                                <h3 className="font-bold text-gray-800 text-sm mb-4 flex items-center gap-2">
+                                    <span className="bg-green-100 text-green-700 w-6 h-6 flex items-center justify-center rounded-full text-xs">2</span>
+                                    Ingresa tus resultados
+                                </h3>
+                                
+                                <div className="mb-4">
+                                    <label className="text-[10px] font-bold text-gray-400 block mb-1 uppercase">Link del Proyecto</label>
+                                    <input 
+                                        className="input-field text-sm" 
+                                        placeholder="https://colab.research.google.com/..." 
+                                        value={linkInput} 
+                                        onChange={e=>setLinkInput(e.target.value)} 
+                                        disabled={isLocked}
+                                    />
+                                </div>
+                                
+                                <div className="mb-6">
+                                    <label className="text-[10px] font-bold text-gray-400 block mb-2 uppercase">Métricas Obtenidas</label>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        {metricsList.map(m => (
+                                            <div key={m}>
+                                                <span className="text-[10px] font-bold text-green-700 block truncate mb-1">{m}</span>
+                                                <input type="number" step="0.0001" className="input-field text-center font-bold" 
+                                                    value={scoresInput[m] || ""} 
+                                                    onChange={e => setScoresInput({...scoresInput, [m]: e.target.value})}
+                                                    disabled={isLocked}
+                                                    placeholder="-"
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                                
+                                {isLocked ? (
+                                    <div className="bg-gray-100 text-gray-500 p-3 rounded text-center font-bold text-xs border">
+                                        {hackathonStatus === 'ended' ? '🔒 EVENTO FINALIZADO' : '⏳ ESPERANDO INICIO'}
+                                    </div>
+                                ) : (
+                                    <button onClick={submitWork} disabled={isSaving} className="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-bold shadow-lg transition transform active:scale-95 flex justify-center items-center gap-2">
+                                        {isSaving ? 'Guardando...' : 'GUARDAR ENTREGA'}
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* PESTAÑA RANKING */}
+                    {activeTab === 'results' && (
+                         <div className="space-y-2 pb-10">
+                             <div className="text-center text-[10px] text-gray-400 uppercase font-bold tracking-wider mb-2">Ordenado por {metricsList[0]}</div>
+                             {ranking.length === 0 && <div className="text-center text-gray-400 text-sm mt-10">Aún no hay grupos registrados.</div>}
+                             {ranking.map((g,i)=>(
+                                 <div key={g.id} className={`card p-3 flex justify-between items-center ${i===0 ? 'border-l-4 border-yellow-400 bg-yellow-50' : 'bg-white'}`}>
+                                     <div className="flex items-center gap-3 overflow-hidden">
+                                         <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${i===0?'bg-yellow-400 text-white':'bg-gray-200 text-gray-500'}`}>#{i+1}</span>
+                                         <div className="flex flex-col min-w-0">
+                                             <span className="font-bold text-sm text-gray-800 truncate">{g.name}</span>
+                                             <span className="text-[10px] text-gray-500">{g.link ? '✓ Entregado' : '-'}</span>
+                                         </div>
+                                     </div>
+                                     <div className="text-right">
+                                         <span className="font-mono font-bold text-lg text-gray-800">{parseFloat(g.scores?.[metricsList[0]]||0).toFixed(4)}</span>
+                                         <div className="text-[9px] text-gray-400 font-bold uppercase">{metricsList[0]}</div>
+                                     </div>
+                                 </div>
+                             ))}
+                         </div>
+                    )}
+                </div>
+            </div>
+        );
+      }
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<App />);
+    </script>
+  </body>
+</html>

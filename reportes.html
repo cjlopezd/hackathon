@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hackathon - Estudiante</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
+      body { font-family: 'Segoe UI', sans-serif; background-color: #f0fdf4; }
+      .input-field { border: 1px solid #d1d5db; border-radius: 0.375rem; padding: 0.5rem; width: 100%; transition: border-color 0.2s; }
+      .input-field:focus { outline: none; border-color: #16a34a; ring: 2px; box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.1); }
+      .input-field:disabled { background-color: #f3f4f6; cursor: not-allowed; color: #9ca3af; }
+      .card { background: white; border-radius: 0.75rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); border: 1px solid #e5e7eb; }
+      
+      /* Animaciones */
+      @keyframes pulse-green { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.1); } 100% { opacity: 1; transform: scale(1); } }
+      .live-indicator { animation: pulse-green 2s infinite; width: 10px; height: 10px; background-color: #4ade80; border-radius: 50%; display: inline-block; margin-right: 8px; box-shadow: 0 0 8px #4ade80; }
+      
+      @keyframes urgent-pulse { 0%, 100% { background-color: #dc2626; } 50% { background-color: #ef4444; } }
+      .bg-urgent { animation: urgent-pulse 1.5s infinite; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useMemo, useEffect, useRef, useCallback } = React;
+
+      function App() {
+        // CONFIGURACIÓN
+        const [apiUrl, setApiUrl] = useState(localStorage.getItem('hackathon_api_url') || "");
+        const [isConfiguringUrl, setIsConfiguringUrl] = useState(!apiUrl);
+        const [activeTab, setActiveTab] = useState('groups');
+        
+        // DATOS GLOBALES
+        const [groups, setGroups] = useState([]);
+        const [hackathonStatus, setHackathonStatus] = useState('setup');
+        const [hackathonName, setHackathonName] = useState("Cargando...");
+        const [metricsList, setMetricsList] = useState(['Score']); 
+        const [endTime, setEndTime] = useState(null);
+        const [timeLeft, setTimeLeft] = useState("--:--");
+        const [isUrgent, setIsUrgent] = useState(false);
+        
+        // ESTADO LOCAL DE EDICIÓN
+        const [myGroupId, setMyGroupId] = useState(null);
+        const [linkInput, setLinkInput] = useState("");
+        const [scoresInput, setScoresInput] = useState({});
+        
+        // CONTROL DE SINCRONIZACIÓN
+        const myGroupIdRef = useRef(null); 
+        const lastTypingTime = useRef(0);  
+        const localOverrides = useRef({}); 
+        
+        // UI
+        const [loading, setLoading] = useState(false);
+        const [statusMsg, setStatusMsg] = useState("");
+
+        // Mantener ref sincronizada
+        useEffect(() => { myGroupIdRef.current = myGroupId; }, [myGroupId]);
+
+        // --- 1. CONEXIÓN AL SERVIDOR ---
+        const sendRequest = async (payload, silent = false) => {
+            if (!apiUrl) return;
+            if (!silent) setLoading(true);
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST', 
+                    redirect: "follow", 
+                    headers: { "Content-Type": "text/plain;charset=utf-8" }, 
+                    body: JSON.stringify(payload)
+                });
+                if (!response.ok) throw new Error("Error red: " + response.status);
+                const text = await response.text();
+                return JSON.parse(text);
+            } catch (error) { 
+                if (!silent) alert("Error de conexión: " + error.message); 
+                return null; 
+            } 
+            finally { if (!silent) setLoading(false); }
+        };
+
+        // --- 2. SINCRONIZACIÓN INTELIGENTE ---
+        const refreshData = useCallback(async (silent = false) => {
+            // A diferencia de antes, SIEMPRE pedimos datos para actualizar el reloj
+            const data = await sendRequest({ action: 'getInitData' }, silent);
+            
+            if (data && data.status === 'success' && data.data) {
+                let serverGroups = data.data.groups || [];
+                
+                // 1. FUSIÓN DE DATOS (Override Local)
+                const now = Date.now();
+                serverGroups = serverGroups.map(g => {
+                    const override = localOverrides.current[g.id];
+                    if (override && (now - override.timestamp < 120000)) { // 2 minutos de validez
+                        return { 
+                            ...g, 
+                            link: override.link, 
+                            scores: override.scores 
+                        };
+                    }
+                    return g;
+                });
+
+                setGroups(serverGroups);
+                
+                // 2. ACTUALIZAR ESTADO GENERAL (Siempre, aunque estés escribiendo)
+                if (data.data.hackathonState) {
+                    const state = data.data.hackathonState;
+                    setHackathonStatus(state.status);
+                    setEndTime(Number(state.endTime));
+                    setHackathonName(state.name || "Hackathon");
+                    if (state.metrics && Array.isArray(state.metrics)) setMetricsList(state.metrics);
+                }
+
+                // 3. ACTUALIZAR INPUTS (Solo si NO estás escribiendo)
+                const isTyping = (Date.now() - lastTypingTime.current < 3000);
+                
+                if (!isTyping) {
+                    const currentGroupId = myGroupIdRef.current;
+                    if (currentGroupId) {
+                        const currentGroup = serverGroups.find(x => x.id === parseInt(currentGroupId));
+                        if (currentGroup) {
+                            // Rellenar link si está vacío localmente
+                            setLinkInput(prev => prev === "" ? (currentGroup.link || "") : prev);
+                            
+                            // Rellenar scores
+                            setScoresInput(prevScores => {
+                                const newScores = { ...prevScores };
+                                let changed = false;
+                                (data.data.hackathonState?.metrics || ['Score']).forEach(m => {
+                                    const serverScore = currentGroup.scores ? currentGroup.scores[m] : "";
+                                    // Si local está vacío y servidor tiene dato, lo tomamos
+                                    if ((newScores[m] === undefined || newScores[m] === "") && (serverScore !== undefined && serverScore !== "")) {
+                                        newScores[m] = serverScore;
+                                        changed = true;
+                                    }
+                                });
+                                return changed ? newScores : prevScores;
+                            });
+                        }
+                    }
+                }
+                
+                if(!silent) { setStatusMsg("Sincronizado"); setTimeout(()=>setStatusMsg(""), 2000); }
+            }
+        }, [apiUrl]); 
+
+        // --- 3. LÓGICA DEL TEMPORIZADOR ---
+        useEffect(() => {
+            const interval = setInterval(() => {
+                if (hackathonStatus === 'running' && endTime) {
+                    const now = Date.now();
+                    const distance = endTime - now;
+                    
+                    // Alerta < 10 min
+                    setIsUrgent(distance > 0 && distance <= 600000);
+
+                    if (distance < 0) {
+                        setTimeLeft("TIEMPO TERMINADO");
+                    } else {
+                        const h = Math.floor((distance % (86400000)) / 3600000);
+                        const m = Math.floor((distance % 3600000) / 60000);
+                        const s = Math.floor((distance % 60000) / 1000);
+                        const f = (n) => String(n).padStart(2, '0');
+                        setTimeLeft(`${f(h)}:${f(m)}:${f(s)}`);
+                    }
+                } else if (hackathonStatus === 'ended') {
+                    setTimeLeft("FINALIZADO");
+                    setIsUrgent(false);
+                } else {
+                    setTimeLeft("ESPERANDO INICIO...");
+                    setIsUrgent(false);
+                }
+            }, 1000);
+            return () => clearInterval(interval);
+        }, [hackathonStatus, endTime]);
+
+        // --- 4. MANEJO DE CAMBIOS ---
+        const handleGroupChange = (newGroupId) => {
+            const gid = parseInt(newGroupId);
+            setMyGroupId(newGroupId);
+            myGroupIdRef.current = newGroupId; 
+            
+            // Intentar recuperar del Caché Local primero
+            const override = localOverrides.current[gid];
+            const selectedGroup = groups.find(g => g.id === gid);
+
+            if (override && (Date.now() - override.timestamp < 120000)) {
+                setLinkInput(override.link || "");
+                setScoresInput(override.scores ? {...override.scores} : {});
+            } else if (selectedGroup) {
+                setLinkInput(selectedGroup.link || "");
+                setScoresInput(selectedGroup.scores ? {...selectedGroup.scores} : {});
+            } else {
+                setLinkInput("");
+                setScoresInput({});
+            }
+            lastTypingTime.current = 0; 
+        };
+
+        const handleInputChange = (setter, value) => {
+            lastTypingTime.current = Date.now(); 
+            setter(value);
+        };
+
+        const handleScoreChange = (metric, value) => {
+            lastTypingTime.current = Date.now(); 
+            setScoresInput(prev => ({ ...prev, [metric]: value }));
+        };
+
+        // --- 5. ENVÍO DE DATOS ---
+        const submitMyWork = async () => {
+            if (!myGroupId) return alert("Selecciona tu grupo primero");
+            if (!linkInput.trim()) return alert("Debes pegar el link de tu proyecto.");
+            
+            setLoading(true);
+            const gid = parseInt(myGroupId);
+
+            // 1. GUARDAR EN CACHÉ LOCAL (Protección inmediata)
+            localOverrides.current[gid] = {
+                link: linkInput,
+                scores: { ...scoresInput },
+                timestamp: Date.now()
+            };
+
+            // 2. Actualización Visual
+            const updatedGroups = groups.map(g => {
+                if (g.id === gid) return { ...g, link: linkInput, scores: scoresInput };
+                return g;
+            });
+            setGroups(updatedGroups);
+            
+            // 3. CALCULAR SCORE SIMPLE PARA BACKEND VIEJO
+            // Tomamos el primer valor de las métricas como "score" principal
+            const firstMetricVal = Object.values(scoresInput)[0] || 0;
+
+            // 4. Enviar al servidor
+            const payload = {
+                action: 'updateGroupSubmission',
+                groupId: gid,
+                link: linkInput,
+                scores: scoresInput,
+                score: firstMetricVal // Enviar también como 'score' singular para compatibilidad
+            };
+            
+            const res = await sendRequest(payload);
+            if (res && res.status === 'success') {
+                alert("✅ ¡Entrega guardada exitosamente!");
+            } else {
+                alert("❌ Error al guardar: " + (res?.message || "Intenta de nuevo."));
+            }
+        };
+
+        // Init
+        useEffect(() => {
+            if (apiUrl && !isConfiguringUrl) {
+                refreshData(true); 
+                const interval = setInterval(() => { refreshData(true); }, 5000);
+                return () => clearInterval(interval);
+            }
+        }, [apiUrl, isConfiguringUrl, refreshData]);
+
+        const ranking = useMemo(() => {
+            const primaryMetric = metricsList[0];
+            return [...groups].sort((a, b) => {
+                const sA = parseFloat(a.scores?.[primaryMetric]) || 0;
+                const sB = parseFloat(b.scores?.[primaryMetric]) || 0;
+                return sB - sA; 
+            });
+        }, [groups, metricsList]);
+
+        if (isConfiguringUrl) return ( <div className="min-h-screen flex items-center justify-center p-4 bg-gray-100"><div className="card p-8 text-center max-w-md w-full bg-white shadow-xl"><h1 className="text-2xl font-bold mb-2 text-green-800">Acceso Estudiante</h1><input className="input-field mb-4" placeholder="URL del Profesor..." defaultValue={apiUrl} onBlur={e=>{setApiUrl(e.target.value);localStorage.setItem('hackathon_api_url', e.target.value);setIsConfiguringUrl(false)}}/><button onClick={()=>setIsConfiguringUrl(false)} className="w-full bg-green-600 hover:bg-green-700 text-white py-2 rounded font-bold transition">Entrar</button></div></div> );
+
+        const isLocked = hackathonStatus === 'ended' || hackathonStatus === 'setup';
+
+        return (
+            <div className="flex flex-col h-screen max-w-md mx-auto bg-white shadow-2xl overflow-hidden border-x border-gray-200">
+                {/* Header Dinámico */}
+                <div className={`text-white p-4 shadow-md z-10 transition-colors duration-500 ${isUrgent ? 'bg-urgent' : 'bg-green-600'}`}>
+                    <div className="flex justify-between items-center mb-2">
+                        <h1 className="font-bold text-lg truncate w-2/3">{hackathonName}</h1>
+                        <div className="flex items-center gap-2">
+                            <span className="live-indicator" title="Conectado"></span>
+                            <button onClick={()=>refreshData(false)} disabled={loading} className="text-xs bg-black/20 px-3 py-1 rounded hover:bg-black/30 transition font-bold">{loading ? '...' : '↻'}</button>
+                        </div>
+                    </div>
+                    <div className="flex justify-between items-center bg-black/20 rounded-lg p-2 backdrop-blur-sm">
+                        <span className="text-xs uppercase opacity-90 font-bold flex items-center gap-1">
+                            {isUrgent && <span>⚠️</span>} 
+                            {hackathonStatus === 'ended' ? 'ESTADO' : (hackathonStatus === 'setup' ? 'ESTADO' : 'TIEMPO RESTANTE')}
+                        </span>
+                        <span className="font-mono text-2xl font-black tracking-widest">{timeLeft}</span>
+                    </div>
+                    {isUrgent && !isLocked && <div className="text-center text-xs font-bold mt-2 bg-red-800/30 p-1 rounded animate-pulse">¡ENTREGA URGENTE! &lt; 10 MIN</div>}
+                </div>
+
+                {/* Tabs */}
+                <div className="flex border-b bg-white">
+                    <button onClick={()=>setActiveTab('groups')} className={`flex-1 py-4 text-sm font-bold transition border-b-2 ${activeTab==='groups'?'text-green-600 border-green-600 bg-green-50':'text-gray-400 border-transparent hover:bg-gray-50'}`}>MI ENTREGA</button>
+                    <button onClick={()=>setActiveTab('results')} className={`flex-1 py-4 text-sm font-bold transition border-b-2 ${activeTab==='results'?'text-green-600 border-green-600 bg-green-50':'text-gray-400 border-transparent hover:bg-gray-50'}`}>RANKING</button>
+                </div>
+
+                {/* Content */}
+                <div className="flex-1 overflow-y-auto p-4 bg-gray-50">
+                    {activeTab === 'groups' && (
+                        <div className="space-y-5">
+                            <div className="card p-5 border-l-4 border-green-500 bg-white">
+                                <h3 className="text-xs font-bold text-gray-500 uppercase mb-2 tracking-wider">1. ¿Cuál es tu equipo?</h3>
+                                <select 
+                                    className="input-field font-bold text-gray-800 text-lg h-12 bg-gray-50 focus:bg-white" 
+                                    value={myGroupId || ""} 
+                                    onChange={e => handleGroupChange(e.target.value)}
+                                >
+                                    <option value="">-- Seleccionar --</option>
+                                    {groups.map(g=>(<option key={g.id} value={g.id}>{g.name}</option>))}
+                                </select>
+                                {myGroupId && (
+                                    <div className="mt-4 bg-green-50 p-3 rounded-lg text-sm border border-green-100">
+                                        <strong className="text-green-800 block mb-1 text-xs uppercase">Integrantes:</strong>
+                                        <ul className="list-disc pl-4 text-gray-700 text-xs">
+                                            {groups.find(g=>g.id===parseInt(myGroupId))?.members.map((m,i)=>(<li key={i}>{m.name}</li>))}
+                                        </ul>
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className={`card p-5 transition-all duration-300 ${!myGroupId ? 'opacity-50 pointer-events-none grayscale' : 'opacity-100'}`}>
+                                <h3 className="text-xs font-bold text-gray-500 uppercase mb-4 tracking-wider">2. Datos de la Solución</h3>
+                                <div className="space-y-5">
+                                    <div>
+                                        <label className="text-[10px] font-black text-gray-400 mb-1 block tracking-wider">ENLACE DEL PROYECTO</label>
+                                        <input 
+                                            className="input-field text-sm" 
+                                            placeholder="https://colab.research.google.com/..." 
+                                            value={linkInput} 
+                                            onChange={e => handleInputChange(setLinkInput, e.target.value)} 
+                                            disabled={isLocked} 
+                                        />
+                                    </div>
+                                    
+                                    <div className="border-t border-gray-100 pt-4">
+                                        <label className="text-[10px] font-black text-gray-400 mb-3 block tracking-wider">MÉTRICAS OBTENIDAS</label>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            {metricsList.map(m => (
+                                                <div key={m}>
+                                                    <label className="text-[10px] font-bold text-green-700 uppercase block mb-1 truncate" title={m}>{m}</label>
+                                                    <input 
+                                                        type="number" 
+                                                        step="0.0001"
+                                                        className="input-field text-center font-mono font-bold text-lg text-gray-800 focus:text-green-700" 
+                                                        placeholder="0.00" 
+                                                        value={scoresInput[m] || ""} 
+                                                        onChange={e => handleScoreChange(m, e.target.value)} 
+                                                        disabled={isLocked} 
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    
+                                    {isLocked ? (
+                                        <div className="bg-red-50 text-red-600 p-4 rounded-lg text-center font-bold text-sm border border-red-100 flex flex-col items-center gap-1">
+                                            <span className="text-2xl">🔒</span>
+                                            <span>{hackathonStatus === 'ended' ? 'HACKATHON FINALIZADO' : 'ESPERANDO INICIO'}</span>
+                                        </div>
+                                    ) : (
+                                        <button onClick={submitMyWork} disabled={loading} className="w-full bg-green-600 hover:bg-green-700 text-white py-4 rounded-lg font-bold shadow-lg transform active:scale-[0.98] transition-all mt-2 text-sm uppercase tracking-widest flex justify-center items-center gap-2">
+                                            {loading ? 'Guardando...' : <><span>💾</span> GUARDAR ENTREGA</>}
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {activeTab === 'results' && (
+                        <div className="space-y-3 pb-10">
+                            <div className="text-center p-2">
+                                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider bg-gray-100 px-3 py-1 rounded-full">Ordenado por {metricsList[0]}</span>
+                            </div>
+                            {ranking.map((g,i)=>(
+                                <div key={g.id} className={`card p-4 flex items-center border-l-4 ${i===0?'border-l-yellow-400 bg-yellow-50/50':'border-l-gray-300'}`}>
+                                    <div className={`w-8 h-8 rounded-full flex items-center justify-center font-black mr-3 text-sm ${i===0?'bg-yellow-400 text-white shadow-sm':'bg-gray-100 text-gray-500'}`}>{i+1}</div>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="font-bold text-gray-800 text-sm truncate">{g.name}</div>
+                                        <div className="text-xs text-gray-500 truncate mt-0.5">
+                                            {g.link ? <span className="text-green-600 font-bold">✓ Entregado</span> : '⏳ Pendiente'}
+                                        </div>
+                                    </div>
+                                    <div className="text-right">
+                                        <div className="font-mono font-black text-xl text-gray-800">{parseFloat(g.scores?.[metricsList[0]] || 0).toFixed(4)}</div>
+                                        <div className="text-[10px] font-bold text-gray-400 uppercase">{metricsList[0]}</div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+                {statusMsg && <div className="bg-green-800 text-white text-[10px] uppercase font-bold tracking-wider text-center py-1 transition-all">{statusMsg}</div>}
+            </div>
+        );
+      }
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<App />);
+    </script>
+  </body>
+</html>

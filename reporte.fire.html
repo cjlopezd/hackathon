@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reportes Académicos</title>
+    
+    <!-- 1. Estilos -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 2. React Core (Cargar primero) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- 3. Hack para Recharts UMD -->
+    <script>
+      window.React = React;
+      window.ReactDOM = ReactDOM;
+    </script>
+    
+    <!-- 4. Dependencias de Recharts -->
+    <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+    
+    <!-- 5. Recharts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.10.3/Recharts.min.js"></script>
+    
+    <!-- 6. Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
+      body { font-family: 'Segoe UI', sans-serif; background-color: #f1f5f9; }
+      .checkbox { width: 1.2rem; height: 1.2rem; cursor: pointer; accent-color: #2563eb; }
+      .table-container { overflow-x: auto; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border-radius: 0.5rem; }
+      th, td { white-space: nowrap; }
+      .tab-btn { padding: 12px 24px; font-weight: bold; color: #64748b; border-bottom: 3px solid transparent; transition: all 0.2s; }
+      .tab-btn.active { color: #2563eb; border-color: #2563eb; background-color: #eff6ff; }
+      .tab-btn:hover:not(.active) { color: #334155; background-color: #e2e8f0; }
+      
+      @media print {
+        .no-print { display: none !important; }
+        body { background: white; }
+        .table-container { box-shadow: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!-- FIREBASE SDK -->
+    <script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+      import { getFirestore, collection, getDocs, doc, getDoc } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+      
+      // --- ¡¡¡ATENCIÓN!!! PEGA TUS CREDENCIALES REALES AQUÍ ABAJO ---
+       const firebaseConfig = {
+        apiKey: "AIzaSyD1ys6rJOYdandrvK9aiNCXnh_c9q77Ixg",
+        authDomain: "iprodam3d.firebaseapp.com",
+        databaseURL: "https://iprodam3d.firebaseio.com",
+        projectId: "iprodam3d",
+        storageBucket: "iprodam3d.firebasestorage.app",
+        messagingSenderId: "1074880513462",
+        appId: "1:1074880513462:web:abc0842f42676017caad17"
+        };
+      // ---------------------------------------------------------------
+
+      window.isConfigured = firebaseConfig.apiKey !== "TU_API_KEY_AQUI" && firebaseConfig.projectId !== "TU_PROJECT_ID";
+
+      if (window.isConfigured) {
+        const app = initializeApp(firebaseConfig);
+        window.db = getFirestore(app);
+        window.collection = collection;
+        window.getDocs = getDocs;
+        window.getDoc = getDoc;
+        window.doc = doc;
+      }
+    </script>
+
+    <script type="text/babel">
+      const { useState, useEffect, useMemo } = React;
+      const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } = window.Recharts || {};
+
+      function App() {
+        if (!window.isConfigured) {
+            return (
+                <div className="min-h-screen flex items-center justify-center bg-red-50 p-4">
+                    <div className="bg-white p-8 rounded-xl shadow-lg border-l-4 border-red-500 max-w-lg">
+                        <h1 className="text-2xl font-bold text-red-600 mb-4">⚠️ Falta Configuración</h1>
+                        <p className="text-gray-700 mb-4">No has configurado las credenciales de Firebase en este archivo (<code>reportes.html</code>).</p>
+                    </div>
+                </div>
+            );
+        }
+
+        // Datos
+        const [courses, setCourses] = useState([]);
+        const [history, setHistory] = useState([]);
+        const [detailData, setDetailData] = useState(null); // Datos del hackathon seleccionado para ver detalle
+        
+        // Selección
+        const [selectedCourseId, setSelectedCourseId] = useState("");
+        const [selectedHackathonIds, setSelectedHackathonIds] = useState(new Set());
+        const [activeTab, setActiveTab] = useState('report'); 
+        const [viewMode, setViewMode] = useState('list'); // 'list' | 'detail'
+        const [searchTerm, setSearchTerm] = useState(""); // Búsqueda de estudiante
+        
+        // UI
+        const [loading, setLoading] = useState(true);
+        const [errorMsg, setErrorMsg] = useState("");
+
+        // Cargar Datos Iniciales
+        useEffect(() => {
+            const loadData = async () => {
+                const interval = setInterval(async () => {
+                    if (window.db) {
+                        clearInterval(interval);
+                        try {
+                            // 1. Cargar Cursos
+                            const coursesRef = window.doc(window.db, "hackathons", "courses_registry");
+                            const coursesSnap = await window.getDoc(coursesRef);
+                            if (coursesSnap.exists()) {
+                                setCourses(coursesSnap.data().list || []);
+                            }
+
+                            // 2. Cargar Historial
+                            const historySnap = await window.getDocs(window.collection(window.db, "hackathon_history"));
+                            const list = [];
+                            historySnap.forEach((doc) => {
+                                list.push({ id: doc.id, ...doc.data() });
+                            });
+                            // Ordenar por fecha descendente
+                            list.sort((a, b) => b.timestamp - a.timestamp);
+                            setHistory(list);
+                            
+                            setLoading(false);
+                        } catch (e) {
+                            console.error(e);
+                            setErrorMsg("Error conectando a Firebase: " + e.message);
+                            setLoading(false);
+                        }
+                    }
+                }, 100);
+            };
+            loadData();
+        }, []);
+
+        // --- LÓGICA DE FILTRADO POR CURSO ---
+        const filteredHistory = useMemo(() => {
+            if (!selectedCourseId) return [];
+            const course = courses.find(c => c.id === parseInt(selectedCourseId));
+            if (!course) return [];
+            const courseStudentSet = new Set(course.students);
+
+            return history.filter(h => {
+                let matchCount = 0;
+                let totalParticipants = 0;
+                if (h.groups) {
+                    h.groups.forEach(g => {
+                        if (g.members) {
+                            g.members.forEach(m => {
+                                totalParticipants++;
+                                if (courseStudentSet.has(m.name)) matchCount++;
+                            });
+                        }
+                    });
+                }
+                if (totalParticipants === 0) return false;
+                // UMBRAL ALTO (80%): Solo mostrar si la gran mayoría de participantes pertenecen a este curso
+                return (matchCount / totalParticipants) >= 0.8;
+            });
+        }, [selectedCourseId, courses, history]);
+
+        // Reset al cambiar curso
+        useEffect(() => { setSelectedHackathonIds(new Set()); setViewMode('list'); setSearchTerm(""); }, [selectedCourseId]);
+
+        // Helpers Selección
+        const toggleHackathon = (id) => {
+            const next = new Set(selectedHackathonIds);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            setSelectedHackathonIds(next);
+        };
+
+        const toggleSelectAll = () => {
+            if (selectedHackathonIds.size === filteredHistory.length) setSelectedHackathonIds(new Set());
+            else setSelectedHackathonIds(new Set(filteredHistory.map(h => h.id)));
+        };
+
+        const openDetail = (hackathon) => {
+            setDetailData(hackathon);
+            setViewMode('detail');
+        };
+
+        // --- LÓGICA REPORTES Y ESTADÍSTICAS ---
+        const reportData = useMemo(() => {
+            if (!selectedCourseId || selectedHackathonIds.size === 0) return null;
+            const course = courses.find(c => c.id === parseInt(selectedCourseId));
+            if (!course) return null;
+
+            const selectedHacks = filteredHistory
+                .filter(h => selectedHackathonIds.has(h.id))
+                .sort((a, b) => a.timestamp - b.timestamp);
+
+            if (selectedHacks.length === 0) return null;
+
+            const rows = course.students.map(studentName => {
+                const row = { name: studentName, attendance: [], stats: { present: 0, absent: 0 } };
+                selectedHacks.forEach(h => {
+                    let found = false, isPresent = false;
+                    if (h.groups) {
+                        h.groups.forEach(g => {
+                            if (g.members) {
+                                const member = g.members.find(m => m.name === studentName);
+                                if (member) { found = true; if (member.present) isPresent = true; }
+                            }
+                        });
+                    }
+                    const status = found && isPresent;
+                    row.attendance.push(status);
+                    if (status) row.stats.present++; else row.stats.absent++;
+                });
+                return row;
+            });
+
+            const columnTotals = selectedHacks.map((_, idx) => {
+                let present = 0, absent = 0;
+                rows.forEach(r => { if (r.attendance[idx]) present++; else absent++; });
+                return { present, absent };
+            });
+
+            return { columns: selectedHacks, rows: rows, totals: columnTotals };
+        }, [selectedCourseId, selectedHackathonIds, filteredHistory, courses]);
+
+        // Filtrado de filas por nombre
+        const filteredRows = useMemo(() => {
+            if (!reportData) return [];
+            if (!searchTerm) return reportData.rows;
+            return reportData.rows.filter(row => 
+                row.name.toLowerCase().includes(searchTerm.toLowerCase())
+            );
+        }, [reportData, searchTerm]);
+
+        const statsData = useMemo(() => {
+            if (!reportData) return [];
+            return reportData.columns.map((h, idx) => ({
+                name: h.name.length > 15 ? h.name.substring(0,15)+'...' : h.name,
+                date: h.date,
+                Asistentes: reportData.totals[idx].present,
+                Faltantes: reportData.totals[idx].absent,
+                Total: reportData.totals[idx].present + reportData.totals[idx].absent
+            }));
+        }, [reportData]);
+
+        const averages = useMemo(() => {
+            if (!statsData.length) return { present: 0, absent: 0 };
+            const totalP = statsData.reduce((acc, curr) => acc + curr.Asistentes, 0);
+            const totalA = statsData.reduce((acc, curr) => acc + curr.Faltantes, 0);
+            return {
+                present: (totalP / statsData.length).toFixed(1),
+                absent: (totalA / statsData.length).toFixed(1)
+            };
+        }, [statsData]);
+
+        if (loading) return <div className="min-h-screen flex items-center justify-center text-gray-500">Cargando datos...</div>;
+        if (errorMsg) return <div className="min-h-screen flex items-center justify-center p-4 text-red-600 font-bold">{errorMsg}</div>;
+
+        return (
+            <div className="min-h-screen pb-10">
+                {/* HEADER */}
+                <div className="bg-white shadow-sm border-b p-6 mb-6 no-print">
+                    <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+                        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">📊 Generador de Reportes</h1>
+                        <div className="flex gap-4 w-full md:w-auto">
+                            <select 
+                                className="border border-gray-300 rounded px-4 py-2 font-bold text-gray-700 w-full md:w-64 focus:ring-2 focus:ring-blue-500 outline-none"
+                                value={selectedCourseId}
+                                onChange={e => setSelectedCourseId(e.target.value)}
+                            >
+                                <option value="">-- Seleccionar Curso --</option>
+                                {courses.map(c => (<option key={c.id} value={c.id}>{c.name} ({c.students.length} alum.)</option>))}
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="max-w-7xl mx-auto px-4">
+                    
+                    {/* VISTA DETALLE INDIVIDUAL */}
+                    {viewMode === 'detail' && detailData ? (
+                        <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden animate-fade-in">
+                            <div className="p-5 border-b bg-slate-50 flex justify-between items-center">
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <h2 className="font-bold text-2xl text-slate-800">{detailData.name}</h2>
+                                        <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded font-bold">{detailData.date}</span>
+                                    </div>
+                                    <p className="text-sm text-gray-500 mt-1">Detalle de grupos y métricas obtenidas.</p>
+                                </div>
+                                <button onClick={()=>setViewMode('list')} className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded font-bold text-sm hover:bg-gray-100 transition">
+                                    ← Volver a la Lista
+                                </button>
+                            </div>
+                            <div className="p-6 overflow-x-auto">
+                                <table className="w-full text-left text-sm border-collapse">
+                                    <thead>
+                                        <tr className="bg-gray-100 text-xs uppercase text-gray-600 font-bold">
+                                            <th className="p-3 border-b w-40">Grupo</th>
+                                            <th className="p-3 border-b">Integrantes</th>
+                                            <th className="p-3 border-b">Enlace Proyecto</th>
+                                            {/* Columnas dinámicas para métricas */}
+                                            {detailData.metrics ? 
+                                                detailData.metrics.map(m => <th key={m} className="p-3 border-b text-right bg-blue-50/50 text-blue-800">{m}</th>) : 
+                                                <th className="p-3 border-b text-right">Score</th>
+                                            }
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {detailData.groups.map((g, i) => (
+                                            <tr key={i} className="border-b hover:bg-slate-50">
+                                                <td className="p-3 font-bold text-slate-800">{g.name}</td>
+                                                <td className="p-3">
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {g.members.map((m, j) => (
+                                                            <span key={j} className={`px-2 py-1 rounded text-xs font-medium border ${m.present ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-600 border-red-200'}`}>
+                                                                {m.name} {!m.present && '(Falta)'}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                </td>
+                                                <td className="p-3">
+                                                    {g.link ? (
+                                                        <a href={g.link} target="_blank" className="text-blue-600 hover:underline flex items-center gap-1 max-w-[200px] truncate">
+                                                            <span className="text-lg">🔗</span> Abrir Link
+                                                        </a>
+                                                    ) : <span className="text-gray-400 italic">No entregado</span>}
+                                                </td>
+                                                {/* Valores de métricas */}
+                                                {detailData.metrics ? 
+                                                    detailData.metrics.map(m => (
+                                                        <td key={m} className="p-3 text-right font-mono font-bold text-slate-700">
+                                                            {g.scores && g.scores[m] ? parseFloat(g.scores[m]).toFixed(4) : '-'}
+                                                        </td>
+                                                    )) :
+                                                    <td className="p-3 text-right font-mono font-bold">{g.score || '-'}</td>
+                                                }
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    ) : (
+                        // VISTA PRINCIPAL (LISTA Y REPORTES)
+                        <>
+                            <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-6 overflow-hidden no-print">
+                                <div className="bg-gray-50 p-3 border-b font-bold text-gray-700 flex justify-between items-center">
+                                    <span>{selectedCourseId ? `Hackathones del Curso (${filteredHistory.length})` : 'Selecciona un curso'}</span>
+                                    {selectedCourseId && (
+                                        <button onClick={toggleSelectAll} className="text-xs text-blue-600 hover:underline">
+                                            {selectedHackathonIds.size === filteredHistory.length ? 'Deseleccionar Todo' : 'Seleccionar Todo'}
+                                        </button>
+                                    )}
+                                </div>
+                                
+                                {selectedCourseId && (
+                                    <div className="p-0">
+                                        {filteredHistory.length === 0 ? 
+                                            <div className="p-8 text-center text-gray-400">No se encontraron eventos para este curso.</div> :
+                                            <table className="w-full text-left text-sm">
+                                                <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+                                                    <tr>
+                                                        <th className="p-3 w-10 text-center">Sel.</th>
+                                                        <th className="p-3">Nombre Evento</th>
+                                                        <th className="p-3">Fecha</th>
+                                                        <th className="p-3 text-center">Asistentes</th>
+                                                        <th className="p-3 text-center">Acción</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y">
+                                                    {filteredHistory.map(h => (
+                                                        <tr key={h.id} className={`hover:bg-blue-50 transition-colors ${selectedHackathonIds.has(h.id) ? 'bg-blue-50/50' : ''}`}>
+                                                            <td className="p-3 text-center">
+                                                                <input type="checkbox" className="checkbox" checked={selectedHackathonIds.has(h.id)} onChange={() => toggleHackathon(h.id)}/>
+                                                            </td>
+                                                            <td className="p-3 font-bold text-slate-700">{h.name}</td>
+                                                            <td className="p-3 text-gray-500">{h.date}</td>
+                                                            <td className="p-3 text-center">
+                                                                <span className="bg-gray-100 text-gray-600 px-2 py-1 rounded text-xs font-bold">{h.attendeesCount}</span>
+                                                            </td>
+                                                            <td className="p-3 text-center">
+                                                                <button onClick={()=>openDetail(h)} className="text-blue-600 hover:text-blue-800 font-bold text-xs border border-blue-200 px-3 py-1 rounded hover:bg-blue-100 transition">
+                                                                    👁️ Ver Detalle
+                                                                </button>
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        }
+                                    </div>
+                                )}
+                            </div>
+
+                            {!selectedCourseId ? (
+                                <div className="text-center py-20 text-gray-400 border-2 border-dashed rounded-xl">Selecciona un curso arriba para comenzar.</div>
+                            ) : reportData ? (
+                                <div>
+                                    <div className="flex justify-center mb-6 no-print">
+                                        <div className="bg-white rounded-full shadow-sm p-1 flex">
+                                            <button onClick={()=>setActiveTab('report')} className={`tab-btn rounded-full ${activeTab==='report'?'active':''}`}>📋 Matriz Consolidada</button>
+                                            <button onClick={()=>setActiveTab('stats')} className={`tab-btn rounded-full ${activeTab==='stats'?'active':''}`}>📈 Estadísticas Globales</button>
+                                        </div>
+                                    </div>
+
+                                    {activeTab === 'report' && (
+                                        <div className="bg-white rounded-xl shadow-lg overflow-hidden border border-gray-200">
+                                            <div className="p-5 border-b bg-slate-50 flex justify-between items-center flex-wrap gap-4">
+                                                <div>
+                                                    <h2 className="font-bold text-xl text-slate-800">{courses.find(c=>c.id===parseInt(selectedCourseId))?.name}</h2>
+                                                    <p className="text-sm text-gray-500">Comparativa de {reportData.columns.length} eventos</p>
+                                                </div>
+                                                
+                                                <div className="flex gap-2 items-center flex-1 justify-end">
+                                                    {/* BUSCADOR DE ESTUDIANTE */}
+                                                    <div className="relative">
+                                                        <input
+                                                            type="text"
+                                                            placeholder="Buscar estudiante..."
+                                                            className="border border-gray-300 rounded pl-8 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
+                                                            value={searchTerm}
+                                                            onChange={(e) => setSearchTerm(e.target.value)}
+                                                        />
+                                                        <span className="absolute left-2.5 top-2 text-gray-400 text-sm">🔍</span>
+                                                    </div>
+                                                    
+                                                    <button onClick={()=>window.print()} className="bg-gray-800 text-white px-4 py-2 rounded font-bold text-sm hover:bg-gray-700 no-print">🖨️ Imprimir</button>
+                                                </div>
+                                            </div>
+                                            
+                                            <div className="table-container">
+                                                <table className="w-full text-left border-collapse text-sm">
+                                                    <thead>
+                                                        <tr className="bg-slate-800 text-white">
+                                                            <th className="p-3 sticky left-0 bg-slate-800 z-10 min-w-[200px] border-r border-slate-700">Estudiante</th>
+                                                            {reportData.columns.map(h => (
+                                                                <th key={h.id} className="p-3 text-center min-w-[120px] border-r border-slate-700">
+                                                                    <div className="text-[10px] opacity-75 font-normal">{h.date}</div>
+                                                                    <div className="truncate max-w-[140px]" title={h.name}>{h.name}</div>
+                                                                </th>
+                                                            ))}
+                                                            <th className="p-3 text-center w-20 bg-green-700 border-r border-green-600">Asist.</th>
+                                                            <th className="p-3 text-center w-20 bg-red-700">Faltas</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {filteredRows.length === 0 && (
+                                                            <tr>
+                                                                <td colSpan={reportData.columns.length + 3} className="p-8 text-center text-gray-400">
+                                                                    No se encontraron estudiantes con "{searchTerm}".
+                                                                </td>
+                                                            </tr>
+                                                        )}
+                                                        {filteredRows.map((row, i) => (
+                                                            <tr key={i} className="hover:bg-blue-50 border-b transition-colors">
+                                                                <td className="p-3 font-semibold text-gray-800 sticky left-0 bg-white border-r border-gray-200">{row.name}</td>
+                                                                {row.attendance.map((attended, idx) => (
+                                                                    <td key={idx} className="p-3 text-center border-r border-gray-100">
+                                                                        {attended 
+                                                                            ? <span className="text-green-500 font-bold text-lg">✔</span> 
+                                                                            : <span className="text-red-400 font-bold text-lg">X</span>
+                                                                        }
+                                                                    </td>
+                                                                ))}
+                                                                <td className="p-3 text-center font-bold text-green-700 bg-green-50 border-r border-green-100">{row.stats.present}</td>
+                                                                <td className="p-3 text-center font-bold text-red-700 bg-red-50">{row.stats.absent}</td>
+                                                            </tr>
+                                                        ))}
+                                                        
+                                                        {/* TOTALES SIEMPRE VISIBLES (basados en el curso completo para referencia) */}
+                                                        <tr className="bg-slate-100 font-bold border-t-2 border-slate-300">
+                                                            <td className="p-3 sticky left-0 bg-slate-100 border-r border-slate-300 text-right pr-4 text-xs uppercase text-gray-500">TOTAL CLASE ASIST.</td>
+                                                            {reportData.totals.map((t, idx) => <td key={idx} className="p-3 text-center text-blue-800 border-r border-slate-200">{t.present}</td>)}
+                                                            <td className="bg-slate-200"></td><td className="bg-slate-200"></td>
+                                                        </tr>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {activeTab === 'stats' && (
+                                        <div className="space-y-6">
+                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                                                <div className="bg-white p-6 rounded-xl shadow-sm border border-blue-100 text-center">
+                                                    <h3 className="text-gray-500 text-sm font-bold uppercase">Eventos</h3>
+                                                    <div className="text-4xl font-black text-blue-600 mt-2">{reportData.columns.length}</div>
+                                                </div>
+                                                <div className="bg-white p-6 rounded-xl shadow-sm border border-green-100 text-center">
+                                                    <h3 className="text-gray-500 text-sm font-bold uppercase">Promedio Asistencia</h3>
+                                                    <div className="text-4xl font-black text-green-600 mt-2">{averages.present}</div>
+                                                </div>
+                                                <div className="bg-white p-6 rounded-xl shadow-sm border border-red-100 text-center">
+                                                    <h3 className="text-gray-500 text-sm font-bold uppercase">Promedio Faltas</h3>
+                                                    <div className="text-4xl font-black text-red-600 mt-2">{averages.absent}</div>
+                                                </div>
+                                            </div>
+                                            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 h-[400px]">
+                                                <h3 className="font-bold text-gray-700 mb-4">Tendencia de Asistencia</h3>
+                                                {BarChart ? (
+                                                    <ResponsiveContainer width="100%" height="100%">
+                                                        <BarChart data={statsData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                                                            <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                                                            <XAxis dataKey="date" />
+                                                            <YAxis />
+                                                            <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }} />
+                                                            <Legend />
+                                                            <Bar dataKey="Asistentes" fill="#16a34a" radius={[4, 4, 0, 0]} stackId="a" />
+                                                            <Bar dataKey="Faltantes" fill="#ef4444" radius={[4, 4, 0, 0]} stackId="a" />
+                                                        </BarChart>
+                                                    </ResponsiveContainer>
+                                                ) : <div className="h-full flex items-center justify-center text-gray-400">Cargando gráfico...</div>}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="text-center py-10 text-gray-400">Selecciona al menos un hackathon para ver la matriz consolidada.</div>
+                            )}
+                        </>
+                    )}
+                </div>
+            </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
